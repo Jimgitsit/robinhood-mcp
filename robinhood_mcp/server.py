@@ -85,7 +85,8 @@ def get_quote(symbol: str) -> dict:
     Returns bid/ask prices, last trade price, volume, and more.
     """
     ensure_logged_in()
-    results = rh.get_quotes(symbol.upper())
+    results = rh.get_quotes(symbol.upper()) or []
+    results = [r for r in results if r is not None]
     if not results:
         return {}
     return results[0]
@@ -100,7 +101,8 @@ def get_quotes(symbols: list[str]) -> list[dict]:
         symbols: List of ticker symbols, e.g. ["AAPL", "TSLA"]
     """
     ensure_logged_in()
-    return rh.get_quotes([s.upper() for s in symbols]) or []
+    results = rh.get_quotes([s.upper() for s in symbols]) or []
+    return [r for r in results if r is not None]
 
 
 @mcp.tool()
@@ -110,7 +112,8 @@ def get_fundamentals(symbol: str) -> dict:
     52-week high/low, description, etc.
     """
     ensure_logged_in()
-    results = rh.get_fundamentals(symbol.upper())
+    results = rh.get_fundamentals(symbol.upper()) or []
+    results = [r for r in results if r is not None]
     if not results:
         return {}
     return results[0]
@@ -131,9 +134,10 @@ def get_historicals(
         span:     Time window — "day", "week", "month", "3month", "year", "5year".
     """
     ensure_logged_in()
-    return rh.get_stock_historicals(
+    results = rh.get_stock_historicals(
         symbol.upper(), interval=interval, span=span
     ) or []
+    return [r for r in results if r is not None]
 
 
 @mcp.tool()
@@ -521,6 +525,150 @@ def cancel_option_order(order_id: str) -> dict:
     """
     ensure_logged_in()
     return rh.cancel_option_order(order_id) or {}
+
+
+# ---------------------------------------------------------------------------
+# Watchlists — read tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_watchlists() -> list[dict]:
+    """List all of the user's watchlists (name, id, item count)."""
+    ensure_logged_in()
+    raw = rh.get_all_watchlists() or {}
+    results = raw.get("results", []) if isinstance(raw, dict) else []
+    return [
+        {
+            "name": w.get("display_name"),
+            "id": w.get("id"),
+            "item_count": w.get("item_count"),
+            "updated_at": w.get("updated_at"),
+        }
+        for w in results
+    ]
+
+
+@mcp.tool()
+def get_watchlist(name: str) -> list[dict]:
+    """
+    Get the contents of a single watchlist by name.
+
+    Returns one row per symbol with quote + fundamentals already attached
+    (price, previous close, 1-day %, volume, avg_volume, market_cap, pe_ratio,
+    52-week range). `holdings` is True if the symbol is in the user's portfolio.
+
+    Args:
+        name: The watchlist's display name (case-sensitive). Use get_watchlists()
+              to discover available names.
+    """
+    ensure_logged_in()
+    raw = rh.get_watchlist_by_name(name) or {}
+    results = raw.get("results", []) if isinstance(raw, dict) else []
+    return [
+        {
+            "symbol": r.get("symbol"),
+            "name": r.get("name"),
+            "price": r.get("price"),
+            "previous_close": r.get("previous_close"),
+            "one_day_percent_change": r.get("one_day_percent_change"),
+            "volume": r.get("volume"),
+            "average_volume": r.get("average_volume"),
+            "market_cap": r.get("market_cap"),
+            "pe_ratio": r.get("pe_ratio"),
+            "high_52_weeks": r.get("high_52_weeks"),
+            "low_52_weeks": r.get("low_52_weeks"),
+            "holdings": r.get("holdings"),
+        }
+        for r in results
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Banking — read tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_linked_bank_accounts() -> list[dict]:
+    """
+    List all bank accounts linked to the Robinhood account.
+
+    Returns one row per linked bank with the fields needed to initiate a
+    withdrawal: id, ach_relationship URL, bank name, account type, last four
+    digits, and verification status.
+    """
+    ensure_logged_in()
+    raw = rh.get_linked_bank_accounts() or []
+    if isinstance(raw, dict):
+        raw = raw.get("results", [])
+    return [
+        {
+            "id": b.get("id"),
+            "url": b.get("url"),
+            "bank_account_holder_name": b.get("bank_account_holder_name"),
+            "bank_account_nickname": b.get("bank_account_nickname"),
+            "bank_account_type": b.get("bank_account_type"),
+            "bank_account_number_mask": b.get("bank_account_number_mask"),
+            "verified": b.get("verified"),
+            "verify_method": b.get("verify_method"),
+            "withdrawal_limit": b.get("withdrawal_limit"),
+        }
+        for b in raw
+    ]
+
+
+@mcp.tool()
+def get_bank_transfers(direction: Optional[str] = None) -> list[dict]:
+    """
+    List bank transfer history (deposits and withdrawals).
+
+    Args:
+        direction: Pass "received" to filter to transfers initiated from your
+                   bank rather than from Robinhood. Leave blank for all
+                   Robinhood-initiated transfers.
+    """
+    ensure_logged_in()
+    raw = rh.get_bank_transfers(direction=direction) or []
+    if isinstance(raw, dict):
+        raw = raw.get("results", [])
+    return [
+        {
+            "id": t.get("id"),
+            "direction": t.get("direction"),
+            "state": t.get("state"),
+            "amount": t.get("amount"),
+            "created_at": t.get("created_at"),
+            "updated_at": t.get("updated_at"),
+            "scheduled": t.get("scheduled"),
+            "expected_landing_date": t.get("expected_landing_date"),
+            "ach_relationship": t.get("ach_relationship"),
+            "cancel": t.get("cancel"),
+        }
+        for t in raw
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Banking — write tools (real money — use with care)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def withdraw_to_bank(ach_relationship_url: str, amount: float) -> dict:
+    """
+    Initiate an ACH withdrawal from Robinhood to a linked bank account.
+
+    This MOVES REAL MONEY. The transfer typically takes 2-5 business days to
+    land at the bank. Verify the destination bank and amount before calling.
+
+    Args:
+        ach_relationship_url: The "url" field from get_linked_bank_accounts()
+                              for the destination bank. Looks like
+                              "https://api.robinhood.com/ach/relationships/<uuid>/".
+        amount: Dollar amount to withdraw. Must not exceed the account's
+                withdrawable balance (settled funds only — unsettled trade
+                proceeds will be rejected).
+    """
+    ensure_logged_in()
+    return rh.withdrawl_funds_to_bank_account(ach_relationship_url, amount) or {}
 
 
 # ---------------------------------------------------------------------------
